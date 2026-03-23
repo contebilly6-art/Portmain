@@ -7,7 +7,7 @@ app.use(cors({ origin: "*", methods: ["GET"] }));
 
 const FINNHUB_KEY = process.env.FINNHUB_KEY;
 
-// VIX uses ^VIX on Yahoo Finance — fetch separately
+// ✅ VIX included in the same batch as all other stocks — no separate slow call
 const STOCK_SYMBOLS = [
   "SPY", "QQQ", "SOFI", "RYCEY", "LFMD", "NKE", "CAKE", "TMC",
   "SOXX", "XLK", "XLF", "XLE", "XLV", "XLY", "XLI", "XLRE", "XLU", "XLB", "XLC", "XLP"
@@ -43,20 +43,19 @@ async function getStockQuote(symbol) {
   }
 }
 
-// Fetch VIX from Yahoo Finance (free, no key needed)
+// ✅ VIX fetched directly from Finnhub — same speed as other stocks
 async function getVIX() {
   try {
-    const url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d";
-    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+    const url = `https://finnhub.io/api/v1/quote?symbol=VIX&token=${FINNHUB_KEY}`;
+    const res = await fetch(url);
     const data = await res.json();
-    const meta = data?.chart?.result?.[0]?.meta;
-    if (!meta || !meta.regularMarketPrice) return null;
-    const price = meta.regularMarketPrice;
-    const prevClose = meta.chartPreviousClose || meta.previousClose;
+    if (!data || !data.c || data.c === 0) return null;
+    const price = data.c;
+    const prevClose = data.pc;
     const changePct = prevClose ? parseFloat((((price - prevClose) / prevClose) * 100).toFixed(2)) : 0;
     return { price, changePct };
   } catch (e) {
-    console.error("Error fetching VIX:", e.message);
+    console.error("VIX fetch error:", e.message);
     return null;
   }
 }
@@ -78,14 +77,15 @@ async function getCryptoPrices() {
     }
     return result;
   } catch (e) {
-    console.error("Error fetching crypto:", e.message);
+    console.error("Crypto fetch error:", e.message);
     return {};
   }
 }
 
 async function refreshPrices() {
-  console.log("Refreshing prices at", new Date().toISOString());
+  console.log("Refreshing all prices at", new Date().toISOString());
   try {
+    // ✅ All fetched in parallel — VIX, stocks, and crypto all at once
     const stockPromises = STOCK_SYMBOLS.map(async (sym) => {
       const data = await getStockQuote(sym);
       return { sym, data };
@@ -102,14 +102,16 @@ async function refreshPrices() {
       if (data) prices[sym] = data;
     });
 
-    // Add VIX separately
-    if (vixResult) prices["VIX"] = vixResult;
+    if (vixResult) {
+      prices["VIX"] = vixResult;
+      console.log("VIX:", vixResult.price);
+    }
 
     cachedPrices = prices;
     lastFetched = Date.now();
-    console.log("VIX:", vixResult?.price, "| Prices updated OK");
+    console.log("Refresh complete — total symbols:", Object.keys(prices).length);
   } catch (e) {
-    console.error("Error refreshing:", e.message);
+    console.error("Refresh error:", e.message);
   }
 }
 
@@ -129,6 +131,6 @@ setInterval(refreshPrices, CACHE_DURATION);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, async () => {
-  console.log(`Server on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
   if (process.env.FINNHUB_KEY) await refreshPrices();
 });
