@@ -7,8 +7,9 @@ app.use(cors({ origin: "*", methods: ["GET"] }));
 
 const FINNHUB_KEY = process.env.FINNHUB_KEY;
 
+// VIX uses ^VIX on Yahoo Finance — fetch separately
 const STOCK_SYMBOLS = [
-  "SPY", "QQQ", "SOFI", "RYCEY", "LFMD", "NKE", "CAKE", "TMC", "VIX",
+  "SPY", "QQQ", "SOFI", "RYCEY", "LFMD", "NKE", "CAKE", "TMC",
   "SOXX", "XLK", "XLF", "XLE", "XLV", "XLY", "XLI", "XLRE", "XLU", "XLB", "XLC", "XLP"
 ];
 
@@ -22,10 +23,9 @@ const CRYPTO_IDS = {
   "wormhole":         "W",
 };
 
-// Cache prices in memory
 let cachedPrices = {};
 let lastFetched = 0;
-const CACHE_DURATION = 30000; // 30 seconds
+const CACHE_DURATION = 30000;
 
 async function getStockQuote(symbol) {
   try {
@@ -39,6 +39,24 @@ async function getStockQuote(symbol) {
     return { price, changePct };
   } catch (e) {
     console.error(`Error fetching ${symbol}:`, e.message);
+    return null;
+  }
+}
+
+// Fetch VIX from Yahoo Finance (free, no key needed)
+async function getVIX() {
+  try {
+    const url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d";
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+    const data = await res.json();
+    const meta = data?.chart?.result?.[0]?.meta;
+    if (!meta || !meta.regularMarketPrice) return null;
+    const price = meta.regularMarketPrice;
+    const prevClose = meta.chartPreviousClose || meta.previousClose;
+    const changePct = prevClose ? parseFloat((((price - prevClose) / prevClose) * 100).toFixed(2)) : 0;
+    return { price, changePct };
+  } catch (e) {
+    console.error("Error fetching VIX:", e.message);
     return null;
   }
 }
@@ -66,16 +84,17 @@ async function getCryptoPrices() {
 }
 
 async function refreshPrices() {
-  console.log("Fetching fresh prices at", new Date().toISOString());
+  console.log("Refreshing prices at", new Date().toISOString());
   try {
     const stockPromises = STOCK_SYMBOLS.map(async (sym) => {
       const data = await getStockQuote(sym);
       return { sym, data };
     });
 
-    const [stockResults, cryptoResults] = await Promise.all([
+    const [stockResults, cryptoResults, vixResult] = await Promise.all([
       Promise.all(stockPromises),
       getCryptoPrices(),
+      getVIX(),
     ]);
 
     const prices = { ...cryptoResults };
@@ -83,16 +102,20 @@ async function refreshPrices() {
       if (data) prices[sym] = data;
     });
 
+    // Add VIX separately
+    if (vixResult) prices["VIX"] = vixResult;
+
     cachedPrices = prices;
     lastFetched = Date.now();
+    console.log("VIX:", vixResult?.price, "| Prices updated OK");
   } catch (e) {
-    console.error("Error refreshing prices:", e.message);
+    console.error("Error refreshing:", e.message);
   }
 }
 
 app.get("/api/prices", async (req, res) => {
   if (!FINNHUB_KEY) {
-    return res.status(500).json({ success: false, error: "FINNHUB_KEY environment variable not set" });
+    return res.status(500).json({ success: false, error: "FINNHUB_KEY not set" });
   }
   if (Date.now() - lastFetched > CACHE_DURATION || Object.keys(cachedPrices).length === 0) {
     await refreshPrices();
@@ -100,12 +123,12 @@ app.get("/api/prices", async (req, res) => {
   res.json({ success: true, prices: cachedPrices, updatedAt: new Date(lastFetched).toISOString() });
 });
 
-app.get("/", (req, res) => res.json({ status: "Portfolio API is running ✅" }));
+app.get("/", (req, res) => res.json({ status: "Portfolio API running ✅" }));
 
 setInterval(refreshPrices, CACHE_DURATION);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, async () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server on port ${PORT}`);
   if (process.env.FINNHUB_KEY) await refreshPrices();
 });
