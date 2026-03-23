@@ -8,7 +8,7 @@ app.use(cors({ origin: "*", methods: ["GET"] }));
 const FINNHUB_KEY = process.env.FINNHUB_KEY;
 
 const STOCK_SYMBOLS = [
-  "SPY", "QQQ", "SOFI", "RYCEY", "LFMD", "NKE", "CAKE", "TMC",
+  "SPY", "QQQ", "SOFI", "RYCEY", "LFMD", "NKE", "CAKE", "TMC", "VIX",
   "SOXX", "XLK", "XLF", "XLE", "XLV", "XLY", "XLI", "XLRE", "XLU", "XLB", "XLC", "XLP"
 ];
 
@@ -22,10 +22,10 @@ const CRYPTO_IDS = {
   "wormhole":         "W",
 };
 
-// ✅ Cache — stores prices in memory so we don't call Finnhub every request
+// Cache prices in memory
 let cachedPrices = {};
 let lastFetched = 0;
-const CACHE_DURATION = 15000; // Fetch fresh data every 15 seconds
+const CACHE_DURATION = 30000; // 30 seconds
 
 async function getStockQuote(symbol) {
   try {
@@ -66,7 +66,7 @@ async function getCryptoPrices() {
 }
 
 async function refreshPrices() {
-  console.log("Fetching fresh prices...");
+  console.log("Fetching fresh prices at", new Date().toISOString());
   try {
     const stockPromises = STOCK_SYMBOLS.map(async (sym) => {
       const data = await getStockQuote(sym);
@@ -85,39 +85,27 @@ async function refreshPrices() {
 
     cachedPrices = prices;
     lastFetched = Date.now();
-    console.log("Prices updated at", new Date().toISOString());
   } catch (e) {
     console.error("Error refreshing prices:", e.message);
   }
 }
 
-// ✅ Main endpoint — responds instantly from cache
 app.get("/api/prices", async (req, res) => {
   if (!FINNHUB_KEY) {
     return res.status(500).json({ success: false, error: "FINNHUB_KEY environment variable not set" });
   }
-
-  // If cache is empty or stale, fetch fresh prices
   if (Date.now() - lastFetched > CACHE_DURATION || Object.keys(cachedPrices).length === 0) {
     await refreshPrices();
   }
-
-  res.json({
-    success: true,
-    prices: cachedPrices,
-    updatedAt: new Date(lastFetched).toISOString(),
-    cached: true,
-  });
+  res.json({ success: true, prices: cachedPrices, updatedAt: new Date(lastFetched).toISOString() });
 });
 
 app.get("/", (req, res) => res.json({ status: "Portfolio API is running ✅" }));
 
-// ✅ Also refresh prices in background every 15 seconds automatically
 setInterval(refreshPrices, CACHE_DURATION);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
-  // Fetch prices immediately on startup
   if (process.env.FINNHUB_KEY) await refreshPrices();
 });
