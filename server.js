@@ -25,6 +25,16 @@ const CRYPTO_IDS = {
   "wormhole": "W"
 };
 
+const CRYPTO_FINNHUB = {
+  "BTC": "BINANCE:BTCUSDT",
+  "ETH": "BINANCE:ETHUSDT",
+  "XRP": "BINANCE:XRPUSDT",
+  "HBAR": "BINANCE:HBARUSDT",
+  "XLM": "BINANCE:XLMUSDT",
+  "ONDO": "BINANCE:ONDOUSDT",
+  "W": "BINANCE:WUSDT"
+};
+
 var cachedPrices = {};
 var lastFetched = 0;
 var isRefreshing = false;
@@ -87,10 +97,7 @@ function getVIX() {
       var price = meta && meta.regularMarketPrice;
       if (!price) return null;
       var prev = (meta.chartPreviousClose || meta.previousClose || price);
-      return {
-        price: price,
-        changePct: parseFloat((((price - prev) / prev) * 100).toFixed(2))
-      };
+      return { price: price, changePct: parseFloat((((price - prev) / prev) * 100).toFixed(2)) };
     })
     .catch(function() {
       return fetchWithTimeout("https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d", 6000)
@@ -104,33 +111,47 @@ function getVIX() {
     });
 }
 
+// ✅ Stock chart history via Finnhub candles — no Yahoo blocking issues
 function getStockHistory(sym) {
-  var url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(sym) + "?interval=1d&range=1mo";
-  return fetchWithTimeout(url, 8000)
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      var result = d && d.chart && d.chart.result && d.chart.result[0];
-      if (!result || !result.timestamps || !result.timestamps.length) return null;
-      var ts = result.timestamps;
-      var cl = (result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close) || [];
-      var dates = [];
-      var closes = [];
-      ts.forEach(function(t, i) {
-        if (cl[i] != null) {
-          dates.push(new Date(t * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
-          closes.push(parseFloat(cl[i].toFixed(2)));
-        }
-      });
-      if (!dates.length) return null;
-      var meta = result.meta;
-      return {
-        dates: dates,
-        closes: closes,
-        afterHoursPrice: (meta && meta.postMarketPrice > 0) ? meta.postMarketPrice : null,
-        preMarketPrice: (meta && meta.preMarketPrice > 0) ? meta.preMarketPrice : null
-      };
-    })
-    .catch(function() { return null; });
+  // Get Unix timestamps for past 30 days
+  var now = Math.floor(Date.now() / 1000);
+  var from = now - (35 * 24 * 60 * 60); // 35 days back
+  var url = "https://finnhub.io/api/v1/stock/candle?symbol=" + sym + "&resolution=D&from=" + from + "&to=" + now + "&token=" + FINNHUB_KEY;
+
+  return fetchWithTimeout(url, 8000).then(function(r) {
+    return r.json();
+  }).then(function(d) {
+    if (!d || d.s !== "ok" || !d.t || !d.t.length) return null;
+    var dates = [];
+    var closes = [];
+    d.t.forEach(function(ts, i) {
+      if (d.c[i] != null) {
+        var dt = new Date(ts * 1000);
+        dates.push(dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+        closes.push(parseFloat(d.c[i].toFixed(2)));
+      }
+    });
+    if (!dates.length) return null;
+    return { dates: dates, closes: closes, afterHoursPrice: null, preMarketPrice: null };
+  }).catch(function() { return null; });
+}
+
+// ✅ Crypto chart history via CoinGecko
+function getCryptoHistory(cgId) {
+  var url = "https://api.coingecko.com/api/v3/coins/" + cgId + "/market_chart?vs_currency=usd&days=30&interval=daily";
+  return fetchWithTimeout(url, 8000).then(function(r) {
+    return r.json();
+  }).then(function(d) {
+    if (!d || !d.prices || !d.prices.length) return null;
+    var dates = [];
+    var closes = [];
+    d.prices.forEach(function(p) {
+      var dt = new Date(p[0]);
+      dates.push(dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+      closes.push(parseFloat(p[1].toFixed(6)));
+    });
+    return { dates: dates, closes: closes };
+  }).catch(function() { return null; });
 }
 
 function refreshPrices() {
@@ -177,12 +198,28 @@ app.get("/api/prices", function(req, res) {
   });
 });
 
+// ✅ Chart history — uses Finnhub for stocks, CoinGecko for crypto
 app.get("/api/history/:symbol", function(req, res) {
   var sym = req.params.symbol.toUpperCase();
-  getStockHistory(sym).then(function(data) {
-    if (!data) return res.json({ success: false, dates: [], closes: [] });
-    res.json({ success: true, dates: data.dates, closes: data.closes, afterHoursPrice: data.afterHoursPrice, preMarketPrice: data.preMarketPrice });
-  });
+
+  // Check if it's a crypto symbol
+  var cgIdMap = {
+    "BTC": "bitcoin", "ETH": "ethereum", "XRP": "ripple",
+    "HBAR": "hedera-hashgraph", "XLM": "stellar",
+    "ONDO": "ondo-finance", "W": "wormhole"
+  };
+
+  if (cgIdMap[sym]) {
+    getCryptoHistory(cgIdMap[sym]).then(function(data) {
+      if (!data) return res.json({ success: false, dates: [], closes: [] });
+      res.json({ success: true, dates: data.dates, closes: data.closes, afterHoursPrice: null, preMarketPrice: null });
+    });
+  } else {
+    getStockHistory(sym).then(function(data) {
+      if (!data) return res.json({ success: false, dates: [], closes: [] });
+      res.json({ success: true, dates: data.dates, closes: data.closes, afterHoursPrice: data.afterHoursPrice, preMarketPrice: data.preMarketPrice });
+    });
+  }
 });
 
 app.get("/", function(req, res) {
