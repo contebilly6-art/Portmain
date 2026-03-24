@@ -2,6 +2,9 @@ const express = require("express");
 const cors = require("cors");
 const fetch = require("node-fetch");
 
+process.on("uncaughtException", function(err) { console.error("Uncaught:", err.message); });
+process.on("unhandledRejection", function(err) { console.error("Unhandled:", err ? err.message : err); });
+
 const app = express();
 app.use(cors({ origin: "*", methods: ["GET"] }));
 
@@ -13,148 +16,187 @@ const STOCK_SYMBOLS = [
 ];
 
 const CRYPTO_IDS = {
-  "bitcoin":"BTC","ethereum":"ETH","ripple":"XRP",
-  "hedera-hashgraph":"HBAR","stellar":"XLM","ondo-finance":"ONDO","wormhole":"W"
+  "bitcoin": "BTC",
+  "ethereum": "ETH",
+  "ripple": "XRP",
+  "hedera-hashgraph": "HBAR",
+  "stellar": "XLM",
+  "ondo-finance": "ONDO",
+  "wormhole": "W"
 };
 
-let cachedPrices = {};
-let lastFetched = 0;
-let isRefreshing = false;
+var cachedPrices = {};
+var lastFetched = 0;
+var isRefreshing = false;
 
-async function fetchWithTimeout(url, ms=5000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try { const r = await fetch(url, {signal:ctrl.signal}); clearTimeout(t); return r; }
-  catch(e) { clearTimeout(t); throw e; }
+function fetchWithTimeout(url, ms) {
+  ms = ms || 5000;
+  var ctrl = new AbortController();
+  var t = setTimeout(function() { ctrl.abort(); }, ms);
+  return fetch(url, { signal: ctrl.signal }).then(function(r) {
+    clearTimeout(t);
+    return r;
+  }).catch(function(e) {
+    clearTimeout(t);
+    throw e;
+  });
 }
 
-async function getStockQuote(sym) {
-  try {
-    const r = await fetchWithTimeout(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${FINNHUB_KEY}`, 4000);
-    const d = await r.json();
-    if(!d || d.c===0) return null;
-    const res = { price:d.c, changePct:parseFloat((((d.c-d.pc)/d.pc)*100).toFixed(2)) };
-    if(d.ap>0) res.afterHoursPrice=d.ap;
-    if(d.pp>0) res.preMarketPrice=d.pp;
+function getStockQuote(sym) {
+  var url = "https://finnhub.io/api/v1/quote?symbol=" + sym + "&token=" + FINNHUB_KEY;
+  return fetchWithTimeout(url, 4000).then(function(r) {
+    return r.json();
+  }).then(function(d) {
+    if (!d || d.c === 0) return null;
+    var res = {
+      price: d.c,
+      changePct: parseFloat((((d.c - d.pc) / d.pc) * 100).toFixed(2))
+    };
+    if (d.ap && d.ap > 0) res.afterHoursPrice = d.ap;
+    if (d.pp && d.pp > 0) res.preMarketPrice = d.pp;
     return res;
-  } catch(e) { return null; }
+  }).catch(function() { return null; });
 }
 
-async function getCrypto() {
-  try {
-    const ids = Object.keys(CRYPTO_IDS).join(",");
-    const r = await fetchWithTimeout(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`, 7000);
-    const d = await r.json();
-    const res = {};
-    for(const [id,sym] of Object.entries(CRYPTO_IDS)) {
-      if(d[id]) res[sym] = { price:d[id].usd, changePct:parseFloat((d[id].usd_24h_change||0).toFixed(2)) };
-    }
-    return res;
-  } catch(e) { return {}; }
-}
-
-// ✅ VIX from Yahoo Finance — server side so no CORS issues
-async function getVIX() {
-  try {
-    const r = await fetchWithTimeout("https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d", 6000);
-    const d = await r.json();
-    const meta = d?.chart?.result?.[0]?.meta;
-    if(!meta?.regularMarketPrice) return null;
-    const price = meta.regularMarketPrice;
-    const prev = meta.chartPreviousClose || meta.previousClose || price;
-    return { price, changePct:parseFloat((((price-prev)/prev)*100).toFixed(2)) };
-  } catch(e) {
-    // Fallback: try query2
-    try {
-      const r = await fetchWithTimeout("https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d", 6000);
-      const d = await r.json();
-      const price = d?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if(price) return { price, changePct:0 };
-    } catch(e2) {}
-    return null;
-  }
-}
-
-// ✅ Stock chart history — server side so no CORS issues
-async function getStockHistory(sym) {
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1mo`;
-    const r = await fetchWithTimeout(url, 8000);
-    const d = await r.json();
-    const result = d?.chart?.result?.[0];
-    if(!result?.timestamps?.length) return null;
-    const ts = result.timestamps;
-    const cl = result.indicators?.quote?.[0]?.close || [];
-    const dates=[], closes=[];
-    ts.forEach((t,i) => {
-      if(cl[i]!=null) {
-        dates.push(new Date(t*1000).toLocaleDateString("en-US",{month:"short",day:"numeric"}));
-        closes.push(parseFloat(cl[i].toFixed(2)));
+function getCrypto() {
+  var ids = Object.keys(CRYPTO_IDS).join(",");
+  var url = "https://api.coingecko.com/api/v3/simple/price?ids=" + ids + "&vs_currencies=usd&include_24hr_change=true";
+  return fetchWithTimeout(url, 7000).then(function(r) {
+    return r.json();
+  }).then(function(d) {
+    var res = {};
+    Object.keys(CRYPTO_IDS).forEach(function(id) {
+      var sym = CRYPTO_IDS[id];
+      if (d[id]) {
+        res[sym] = {
+          price: d[id].usd,
+          changePct: parseFloat((d[id].usd_24h_change || 0).toFixed(2))
+        };
       }
     });
-    if(!dates.length) return null;
-    const meta = result.meta;
-    return {
-      dates, closes,
-      afterHoursPrice: meta?.postMarketPrice>0 ? meta.postMarketPrice : null,
-      preMarketPrice: meta?.preMarketPrice>0 ? meta.preMarketPrice : null,
-    };
-  } catch(e) { return null; }
+    return res;
+  }).catch(function() { return {}; });
 }
 
-async function refreshPrices() {
-  if(isRefreshing) return;
+function getVIX() {
+  return fetchWithTimeout("https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d", 6000)
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var result = d && d.chart && d.chart.result && d.chart.result[0];
+      var meta = result && result.meta;
+      var price = meta && meta.regularMarketPrice;
+      if (!price) return null;
+      var prev = (meta.chartPreviousClose || meta.previousClose || price);
+      return {
+        price: price,
+        changePct: parseFloat((((price - prev) / prev) * 100).toFixed(2))
+      };
+    })
+    .catch(function() {
+      return fetchWithTimeout("https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d", 6000)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          var price = d && d.chart && d.chart.result && d.chart.result[0] && d.chart.result[0].meta && d.chart.result[0].meta.regularMarketPrice;
+          if (price) return { price: price, changePct: 0 };
+          return null;
+        })
+        .catch(function() { return null; });
+    });
+}
+
+function getStockHistory(sym) {
+  var url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(sym) + "?interval=1d&range=1mo";
+  return fetchWithTimeout(url, 8000)
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var result = d && d.chart && d.chart.result && d.chart.result[0];
+      if (!result || !result.timestamps || !result.timestamps.length) return null;
+      var ts = result.timestamps;
+      var cl = (result.indicators && result.indicators.quote && result.indicators.quote[0] && result.indicators.quote[0].close) || [];
+      var dates = [];
+      var closes = [];
+      ts.forEach(function(t, i) {
+        if (cl[i] != null) {
+          dates.push(new Date(t * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+          closes.push(parseFloat(cl[i].toFixed(2)));
+        }
+      });
+      if (!dates.length) return null;
+      var meta = result.meta;
+      return {
+        dates: dates,
+        closes: closes,
+        afterHoursPrice: (meta && meta.postMarketPrice > 0) ? meta.postMarketPrice : null,
+        preMarketPrice: (meta && meta.preMarketPrice > 0) ? meta.preMarketPrice : null
+      };
+    })
+    .catch(function() { return null; });
+}
+
+function refreshPrices() {
+  if (isRefreshing) return Promise.resolve();
   isRefreshing = true;
-  try {
-    const [stockEntries, cryptoRes, vixRes] = await Promise.all([
-      Promise.all(STOCK_SYMBOLS.map(async sym => [sym, await getStockQuote(sym)])),
-      getCrypto(),
-      getVIX(),
-    ]);
-    const prices = {...cryptoRes};
-    stockEntries.forEach(([sym,d]) => { if(d) prices[sym]=d; });
-    if(vixRes) prices["VIX"] = vixRes;
-    if(Object.keys(prices).length > 5) {
+  var stockPromises = STOCK_SYMBOLS.map(function(sym) {
+    return getStockQuote(sym).then(function(d) { return [sym, d]; });
+  });
+  return Promise.all([
+    Promise.all(stockPromises),
+    getCrypto(),
+    getVIX()
+  ]).then(function(results) {
+    var stockEntries = results[0];
+    var cryptoRes = results[1];
+    var vixRes = results[2];
+    var prices = {};
+    Object.keys(cryptoRes).forEach(function(k) { prices[k] = cryptoRes[k]; });
+    stockEntries.forEach(function(entry) {
+      if (entry[1]) prices[entry[0]] = entry[1];
+    });
+    if (vixRes) prices["VIX"] = vixRes;
+    if (Object.keys(prices).length > 5) {
       cachedPrices = prices;
       lastFetched = Date.now();
-      console.log(`✅ ${Object.keys(prices).length} symbols | VIX:${vixRes?.price||"n/a"}`);
+      console.log("Updated " + Object.keys(prices).length + " symbols. VIX: " + (vixRes ? vixRes.price : "n/a"));
     }
-  } catch(e) { console.error(e.message); }
-  isRefreshing = false;
+    isRefreshing = false;
+  }).catch(function(e) {
+    console.error("Refresh error:", e.message);
+    isRefreshing = false;
+  });
 }
 
-// ✅ Main prices endpoint
-app.get("/api/prices", async (req,res) => {
-  if(!FINNHUB_KEY) return res.status(500).json({success:false,error:"FINNHUB_KEY not set"});
-  if(Object.keys(cachedPrices).length > 0) {
-    res.json({success:true, prices:cachedPrices, updatedAt:new Date(lastFetched).toISOString()});
-    if(Date.now()-lastFetched > 15000) refreshPrices();
+app.get("/api/prices", function(req, res) {
+  if (!FINNHUB_KEY) return res.status(500).json({ success: false, error: "FINNHUB_KEY not set" });
+  if (Object.keys(cachedPrices).length > 0) {
+    res.json({ success: true, prices: cachedPrices, updatedAt: new Date(lastFetched).toISOString() });
+    if (Date.now() - lastFetched > 15000) refreshPrices();
     return;
   }
-  await refreshPrices();
-  res.json({success:true, prices:cachedPrices, updatedAt:new Date(lastFetched).toISOString()});
+  refreshPrices().then(function() {
+    res.json({ success: true, prices: cachedPrices, updatedAt: new Date(lastFetched).toISOString() });
+  });
 });
 
-// ✅ NEW: Stock chart history endpoint — bypasses browser CORS completely
-app.get("/api/history/:symbol", async (req,res) => {
-  const sym = req.params.symbol.toUpperCase();
-  const data = await getStockHistory(sym);
-  if(!data) return res.json({success:false, dates:[], closes:[]});
-  res.json({success:true, ...data});
+app.get("/api/history/:symbol", function(req, res) {
+  var sym = req.params.symbol.toUpperCase();
+  getStockHistory(sym).then(function(data) {
+    if (!data) return res.json({ success: false, dates: [], closes: [] });
+    res.json({ success: true, dates: data.dates, closes: data.closes, afterHoursPrice: data.afterHoursPrice, preMarketPrice: data.preMarketPrice });
+  });
 });
 
-app.get("/", (req,res) => res.json({status:"Portfolio API ✅", symbols:Object.keys(cachedPrices).length}));
+app.get("/", function(req, res) {
+  res.json({ status: "Portfolio API running", symbols: Object.keys(cachedPrices).length });
+});
 
 setInterval(refreshPrices, 15000);
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, async () => {
-  console.log(`Port ${PORT}`);
-  if(FINNHUB_KEY) { await refreshPrices(); console.log("Cache ready ✅"); }
-});{
-  "name": "portfolio-backend",
-  "version": "1.0.0",
-  "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "dependencies": { "cors": "^2.8.5", "express": "^4.18.2", "node-fetch": "^2.7.0" }
-}
+var PORT = process.env.PORT || 3001;
+app.listen(PORT, function() {
+  console.log("Server running on port " + PORT);
+  if (FINNHUB_KEY) {
+    refreshPrices().then(function() {
+      console.log("Cache pre-warmed");
+    });
+  }
+});
