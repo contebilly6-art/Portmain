@@ -8,154 +8,153 @@ app.use(cors({ origin: "*", methods: ["GET"] }));
 const FINNHUB_KEY = process.env.FINNHUB_KEY;
 
 const STOCK_SYMBOLS = [
-  "SPY", "QQQ", "SOFI", "RYCEY", "LFMD", "NKE", "CAKE", "TMC", "DIA",
-  "SOXX", "XLK", "XLF", "XLE", "XLV", "XLY", "XLI", "XLRE", "XLU", "XLB", "XLC", "XLP"
+  "SPY","QQQ","SOFI","RYCEY","LFMD","NKE","CAKE","TMC","DIA",
+  "SOXX","XLK","XLF","XLE","XLV","XLY","XLI","XLRE","XLU","XLB","XLC","XLP"
 ];
 
 const CRYPTO_IDS = {
-  "bitcoin":          "BTC",
-  "ethereum":         "ETH",
-  "ripple":           "XRP",
-  "hedera-hashgraph": "HBAR",
-  "stellar":          "XLM",
-  "ondo-finance":     "ONDO",
-  "wormhole":         "W",
+  "bitcoin":"BTC","ethereum":"ETH","ripple":"XRP",
+  "hedera-hashgraph":"HBAR","stellar":"XLM","ondo-finance":"ONDO","wormhole":"W"
 };
 
 let cachedPrices = {};
 let lastFetched = 0;
-const CACHE_DURATION = 20000; // 20 seconds — faster updates
+let isRefreshing = false;
 
-// Fetch with timeout to avoid hanging
-async function fetchWithTimeout(url, ms = 5000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
+async function fetchWithTimeout(url, ms=5000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { const r = await fetch(url, {signal:ctrl.signal}); clearTimeout(t); return r; }
+  catch(e) { clearTimeout(t); throw e; }
+}
+
+async function getStockQuote(sym) {
   try {
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
+    const r = await fetchWithTimeout(`https://finnhub.io/api/v1/quote?symbol=${sym}&token=${FINNHUB_KEY}`, 4000);
+    const d = await r.json();
+    if(!d || d.c===0) return null;
+    const res = { price:d.c, changePct:parseFloat((((d.c-d.pc)/d.pc)*100).toFixed(2)) };
+    if(d.ap>0) res.afterHoursPrice=d.ap;
+    if(d.pp>0) res.preMarketPrice=d.pp;
     return res;
-  } catch (e) {
-    clearTimeout(timer);
-    throw e;
-  }
+  } catch(e) { return null; }
 }
 
-async function getStockQuote(symbol) {
-  try {
-    const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_KEY}`;
-    const res = await fetchWithTimeout(url, 4000);
-    const data = await res.json();
-    if (!data || data.c === 0) return null;
-    const price = data.c;
-    const prevClose = data.pc;
-    const changePct = parseFloat((((price - prevClose) / prevClose) * 100).toFixed(2));
-    const result = { price, changePct };
-    if (data.ap && data.ap > 0) result.afterHoursPrice = data.ap;
-    if (data.pp && data.pp > 0) result.preMarketPrice = data.pp;
-    return result;
-  } catch (e) {
-    return null;
-  }
-}
-
-async function getCryptoPrices() {
+async function getCrypto() {
   try {
     const ids = Object.keys(CRYPTO_IDS).join(",");
-    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`;
-    const res = await fetchWithTimeout(url, 6000);
-    const data = await res.json();
-    const result = {};
-    for (const [cgId, sym] of Object.entries(CRYPTO_IDS)) {
-      if (data[cgId]) {
-        result[sym] = {
-          price: data[cgId].usd,
-          changePct: parseFloat((data[cgId].usd_24h_change || 0).toFixed(2)),
-        };
-      }
+    const r = await fetchWithTimeout(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`, 7000);
+    const d = await r.json();
+    const res = {};
+    for(const [id,sym] of Object.entries(CRYPTO_IDS)) {
+      if(d[id]) res[sym] = { price:d[id].usd, changePct:parseFloat((d[id].usd_24h_change||0).toFixed(2)) };
     }
-    return result;
-  } catch (e) {
-    console.error("Crypto error:", e.message);
-    return {};
-  }
+    return res;
+  } catch(e) { return {}; }
 }
 
+// ✅ VIX from Yahoo Finance — server side so no CORS issues
 async function getVIX() {
   try {
-    const url = `https://finnhub.io/api/v1/quote?symbol=VIX&token=${FINNHUB_KEY}`;
-    const res = await fetchWithTimeout(url, 4000);
-    const data = await res.json();
-    if (!data || !data.c || data.c === 0) return null;
-    const price = data.c;
-    const prevClose = data.pc;
-    const changePct = prevClose ? parseFloat((((price - prevClose) / prevClose) * 100).toFixed(2)) : 0;
-    return { price, changePct };
-  } catch (e) {
+    const r = await fetchWithTimeout("https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d", 6000);
+    const d = await r.json();
+    const meta = d?.chart?.result?.[0]?.meta;
+    if(!meta?.regularMarketPrice) return null;
+    const price = meta.regularMarketPrice;
+    const prev = meta.chartPreviousClose || meta.previousClose || price;
+    return { price, changePct:parseFloat((((price-prev)/prev)*100).toFixed(2)) };
+  } catch(e) {
+    // Fallback: try query2
+    try {
+      const r = await fetchWithTimeout("https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d", 6000);
+      const d = await r.json();
+      const price = d?.chart?.result?.[0]?.meta?.regularMarketPrice;
+      if(price) return { price, changePct:0 };
+    } catch(e2) {}
     return null;
   }
 }
 
-// Fetch stocks in small batches to avoid rate limiting
-async function fetchStocksInBatches(symbols, batchSize = 10) {
-  const results = {};
-  for (let i = 0; i < symbols.length; i += batchSize) {
-    const batch = symbols.slice(i, i + batchSize);
-    const batchResults = await Promise.all(
-      batch.map(async sym => ({ sym, data: await getStockQuote(sym) }))
-    );
-    batchResults.forEach(({ sym, data }) => {
-      if (data) results[sym] = data;
+// ✅ Stock chart history — server side so no CORS issues
+async function getStockHistory(sym) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1mo`;
+    const r = await fetchWithTimeout(url, 8000);
+    const d = await r.json();
+    const result = d?.chart?.result?.[0];
+    if(!result?.timestamps?.length) return null;
+    const ts = result.timestamps;
+    const cl = result.indicators?.quote?.[0]?.close || [];
+    const dates=[], closes=[];
+    ts.forEach((t,i) => {
+      if(cl[i]!=null) {
+        dates.push(new Date(t*1000).toLocaleDateString("en-US",{month:"short",day:"numeric"}));
+        closes.push(parseFloat(cl[i].toFixed(2)));
+      }
     });
-    // Small delay between batches to respect rate limits
-    if (i + batchSize < symbols.length) {
-      await new Promise(r => setTimeout(r, 200));
-    }
-  }
-  return results;
+    if(!dates.length) return null;
+    const meta = result.meta;
+    return {
+      dates, closes,
+      afterHoursPrice: meta?.postMarketPrice>0 ? meta.postMarketPrice : null,
+      preMarketPrice: meta?.preMarketPrice>0 ? meta.preMarketPrice : null,
+    };
+  } catch(e) { return null; }
 }
 
 async function refreshPrices() {
-  console.log("Refreshing prices at", new Date().toISOString());
+  if(isRefreshing) return;
+  isRefreshing = true;
   try {
-    // Run stocks, crypto, and VIX all in parallel
-    const [stockResults, cryptoResults, vixResult] = await Promise.all([
-      fetchStocksInBatches(STOCK_SYMBOLS),
-      getCryptoPrices(),
+    const [stockEntries, cryptoRes, vixRes] = await Promise.all([
+      Promise.all(STOCK_SYMBOLS.map(async sym => [sym, await getStockQuote(sym)])),
+      getCrypto(),
       getVIX(),
     ]);
-
-    const prices = { ...cryptoResults, ...stockResults };
-    if (vixResult) prices["VIX"] = vixResult;
-
-    // Only update cache if we got meaningful data
-    if (Object.keys(prices).length > 5) {
+    const prices = {...cryptoRes};
+    stockEntries.forEach(([sym,d]) => { if(d) prices[sym]=d; });
+    if(vixRes) prices["VIX"] = vixRes;
+    if(Object.keys(prices).length > 5) {
       cachedPrices = prices;
       lastFetched = Date.now();
-      console.log(`Updated ${Object.keys(prices).length} symbols | VIX: ${vixResult?.price || "n/a"}`);
+      console.log(`✅ ${Object.keys(prices).length} symbols | VIX:${vixRes?.price||"n/a"}`);
     }
-  } catch (e) {
-    console.error("Refresh error:", e.message);
-  }
+  } catch(e) { console.error(e.message); }
+  isRefreshing = false;
 }
 
-app.get("/api/prices", async (req, res) => {
-  if (!FINNHUB_KEY) {
-    return res.status(500).json({ success: false, error: "FINNHUB_KEY not set" });
+// ✅ Main prices endpoint
+app.get("/api/prices", async (req,res) => {
+  if(!FINNHUB_KEY) return res.status(500).json({success:false,error:"FINNHUB_KEY not set"});
+  if(Object.keys(cachedPrices).length > 0) {
+    res.json({success:true, prices:cachedPrices, updatedAt:new Date(lastFetched).toISOString()});
+    if(Date.now()-lastFetched > 15000) refreshPrices();
+    return;
   }
-  // If cache is stale or empty, refresh now
-  if (Date.now() - lastFetched > CACHE_DURATION || Object.keys(cachedPrices).length === 0) {
-    await refreshPrices();
-  }
-  res.json({ success: true, prices: cachedPrices, updatedAt: new Date(lastFetched).toISOString() });
+  await refreshPrices();
+  res.json({success:true, prices:cachedPrices, updatedAt:new Date(lastFetched).toISOString()});
 });
 
-app.get("/", (req, res) => res.json({ status: "Portfolio API running ✅", symbols: Object.keys(cachedPrices).length }));
+// ✅ NEW: Stock chart history endpoint — bypasses browser CORS completely
+app.get("/api/history/:symbol", async (req,res) => {
+  const sym = req.params.symbol.toUpperCase();
+  const data = await getStockHistory(sym);
+  if(!data) return res.json({success:false, dates:[], closes:[]});
+  res.json({success:true, ...data});
+});
 
-// Background refresh every 20 seconds
-setInterval(refreshPrices, CACHE_DURATION);
+app.get("/", (req,res) => res.json({status:"Portfolio API ✅", symbols:Object.keys(cachedPrices).length}));
+
+setInterval(refreshPrices, 15000);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, async () => {
-  console.log(`Server running on port ${PORT}`);
-  if (process.env.FINNHUB_KEY) await refreshPrices();
-});
+  console.log(`Port ${PORT}`);
+  if(FINNHUB_KEY) { await refreshPrices(); console.log("Cache ready ✅"); }
+});{
+  "name": "portfolio-backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "cors": "^2.8.5", "express": "^4.18.2", "node-fetch": "^2.7.0" }
+}
