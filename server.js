@@ -10,7 +10,7 @@ const FINNHUB_KEY = process.env.FINNHUB_KEY;
 // ✅ VIX included in the same batch as all other stocks — no separate slow call
 const STOCK_SYMBOLS = [
   "SPY", "QQQ", "SOFI", "RYCEY", "LFMD", "NKE", "CAKE", "TMC",
-  "SOXX", "XLK", "XLF", "XLE", "XLV", "XLY", "XLI", "XLRE", "XLU", "XLB", "XLC", "XLP"
+  "SOXX", "XLK", "XLF", "XLE", "XLV", "XLY", "XLI", "XLRE", "XLU", "XLB", "XLC", "XLP", "DIA"
 ];
 
 const CRYPTO_IDS = {
@@ -36,7 +36,11 @@ async function getStockQuote(symbol) {
     const price = data.c;
     const prevClose = data.pc;
     const changePct = parseFloat((((price - prevClose) / prevClose) * 100).toFixed(2));
-    return { price, changePct };
+    const result = { price, changePct };
+    // Include after hours / pre-market price if available
+    if (data.ap && data.ap > 0) result.afterHoursPrice = data.ap;  // after hours
+    if (data.pp && data.pp > 0) result.preMarketPrice = data.pp;   // pre-market
+    return result;
   } catch (e) {
     console.error(`Error fetching ${symbol}:`, e.message);
     return null;
