@@ -169,7 +169,7 @@ app.get("/api/prices", function(req, res) {
   if (!FINNHUB_KEY) return res.status(500).json({ success: false, error: "FINNHUB_KEY not set" });
   if (Object.keys(cachedPrices).length > 0) {
     res.json({ success: true, prices: cachedPrices, updatedAt: new Date(lastFetched).toISOString() });
-    if (Date.now() - lastFetched > 15000) refreshPrices();
+    if (Date.now() - lastFetched > 60000) refreshPrices();
     return;
   }
   refreshPrices().then(function() {
@@ -189,7 +189,7 @@ app.get("/", function(req, res) {
   res.json({ status: "Portfolio API running", symbols: Object.keys(cachedPrices).length });
 });
 
-setInterval(refreshPrices, 15000);
+setInterval(refreshPrices, 60000);
 
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
