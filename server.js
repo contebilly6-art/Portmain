@@ -68,23 +68,6 @@ function getStockQuote(sym) {
   }).catch(function() { return null; });
 }
 
-// Fetch annual dividend for a stock symbol
-function getStockDividend(sym) {
-  var url = "https://finnhub.io/api/v1/stock/metric?symbol=" + sym + "&metric=all&token=" + FINNHUB_KEY;
-  return fetchWithTimeout(url, 4000).then(function(r) {
-    return r.json();
-  }).then(function(d) {
-    if (!d || !d.metric) return null;
-    var annual = d.metric["dividendPerShareAnnual"] || d.metric["currentDividendYieldTTM"] || null;
-    var yieldPct = d.metric["dividendYieldIndicatedAnnual"] || null;
-    if (!annual && !yieldPct) return null;
-    return {
-      annual: annual ? parseFloat(annual.toFixed(2)) : null,
-      yieldPct: yieldPct ? parseFloat(yieldPct.toFixed(2)) : null
-    };
-  }).catch(function() { return null; });
-}
-
 function getCrypto() {
   var ids = Object.keys(CRYPTO_IDS).join(",");
   var url = "https://api.coingecko.com/api/v3/simple/price?ids=" + ids + "&vs_currencies=usd&include_24hr_change=true";
@@ -132,7 +115,7 @@ function getVIX() {
 function getStockHistory(sym) {
   // Get Unix timestamps for past 30 days
   var now = Math.floor(Date.now() / 1000);
-  var from = now - (185 * 24 * 60 * 60); // 35 days back
+  var from = now - (35 * 24 * 60 * 60); // 35 days back
   var url = "https://finnhub.io/api/v1/stock/candle?symbol=" + sym + "&resolution=D&from=" + from + "&to=" + now + "&token=" + FINNHUB_KEY;
 
   return fetchWithTimeout(url, 8000).then(function(r) {
@@ -155,7 +138,7 @@ function getStockHistory(sym) {
 
 // ✅ Crypto chart history via CoinGecko
 function getCryptoHistory(cgId) {
-  var url = "https://api.coingecko.com/api/v3/coins/" + cgId + "/market_chart?vs_currency=usd&days=180&interval=daily";
+  var url = "https://api.coingecko.com/api/v3/coins/" + cgId + "/market_chart?vs_currency=usd&days=30&interval=daily";
   return fetchWithTimeout(url, 8000).then(function(r) {
     return r.json();
   }).then(function(d) {
@@ -175,18 +158,7 @@ function refreshPrices() {
   if (isRefreshing) return Promise.resolve();
   isRefreshing = true;
   var stockPromises = STOCK_SYMBOLS.map(function(sym) {
-    return Promise.all([
-      getStockQuote(sym),
-      getStockDividend(sym)
-    ]).then(function(results) {
-      var quote = results[0];
-      var div = results[1];
-      if (quote && div) {
-        if (div.annual) quote.dividendAnnual = div.annual;
-        if (div.yieldPct) quote.dividendYield = div.yieldPct;
-      }
-      return [sym, quote];
-    });
+    return getStockQuote(sym).then(function(d) { return [sym, d]; });
   });
   return Promise.all([
     Promise.all(stockPromises),
